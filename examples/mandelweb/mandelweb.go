@@ -3,11 +3,13 @@
 package main
 
 import (
+	"context"
 	"image"
 	"image/color"
 	"image/png"
 	"log"
 	"runtime"
+	"runtime/trace"
 	"sync"
 	"time"
 
@@ -33,6 +35,10 @@ func logRequest(h http.Handler) http.Handler {
 }
 
 func mandelbrot(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
+	ctx, task := trace.NewTask(ctx, "mandelbrot")
+	defer task.End()
+
 	const height, width = 512, 512
 	c := make([][]color.RGBA, height)
 	for i := range c {
@@ -40,7 +46,9 @@ func mandelbrot(w http.ResponseWriter, req *http.Request) {
 	}
 	img := &img{h: height, w: width, m: c}
 
-	fillImage(img, runtime.NumCPU())
+	fillImage(ctx, img, runtime.NumCPU())
+
+	defer trace.StartRegion(ctx, "png.Encode").End()
 	png.Encode(w, img)
 }
 
@@ -53,16 +61,19 @@ func (m *img) At(x, y int) color.Color { return m.m[x][y] }
 func (m *img) ColorModel() color.Model { return color.RGBAModel }
 func (m *img) Bounds() image.Rectangle { return image.Rect(0, 0, m.h, m.w) }
 
-func fillImage(m *img, workers int) {
+func fillImage(ctx context.Context, m *img, workers int) {
+	defer trace.StartRegion(ctx, "fillImage").End()
 	c := make(chan int, m.h)
 	var wg sync.WaitGroup
 	wg.Add(workers)
 	for i := 0; i < workers; i++ {
 		go func() {
+			defer trace.StartRegion(ctx, "fillImageWorker").End()
 			defer wg.Done()
 			for i := range c {
 				for j := range m.m[i] {
-					fillPixel(m, i, j)
+					trace.Logf(ctx, "i", "%d", i)
+					fillPixel(ctx, m, i, j)
 				}
 			}
 		}()
@@ -75,7 +86,8 @@ func fillImage(m *img, workers int) {
 	wg.Wait()
 }
 
-func fillPixel(m *img, x, y int) {
+func fillPixel(ctx context.Context, m *img, x, y int) {
+	defer trace.StartRegion(ctx, "fillPixel").End()
 	const n = 1000
 	const Limit = 2.0
 	const Zoom = 4
